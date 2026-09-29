@@ -1,33 +1,13 @@
-# Ignorar ambientes virtuais comuns
+# Ignore virtual environmentsS
 venv/
 env/
 .venv/
 .env/
 
-# Ignorar arquivos de cache do Python
+# Ignore python cache files
 __pycache__/
 *.py[cod]
 *.pyo
 
-# Ignorar arquivos do sistema
-.DS_Store
-Thumbs.db
-
-# Ignorar all plot files
+# Ignore all plot files
 *.tec
-
-# Ignorar spyder project
-.spyproject/
-
-# Ignorar ppt
-*.ppt
-*.pptx
-
-data/octahedron/multi_phase/d_1.0nm/s0.25/scripts/energy_surface/
-data/octahedron/multi_phase/d_1.0nm/s0.5/scripts/energy_surface/
-data/octahedron/multi_phase/d_1.0nm/s0.75/scripts/energy_surface/
-data/octahedron/multi_phase/d_1.0nm/s1.0/scripts/energy_surface/
-
-merrill.exe
-
-.claude/
