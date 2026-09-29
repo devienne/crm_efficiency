@@ -10,28 +10,11 @@ State space (data-driven, determined by scanning MERRILL barrier files):
     HAV : 56–98 nm      (6 states along ±⟨100⟩)
     EAV : 71–500 nm     (8 states along ±⟨111⟩)
 
-Transition types and source files (new naming → old fallback):
-  SD ↔ SD    : *_SD_1_1_1_to_SD_1_1_-1.txt          (representative)
-  SD ↔ HAV   : *_SD_1_1_1_to_HAV_1_0_0.txt          → *_size_hyst_states.txt
-  HAV ↔ HAV  : *_HAV_1_0_0_to_HAV_0_1_0.txt         → *_lower_branch_rotates.txt
-  HAV ↔ EAV  : *_HAV_0_0_1_to_EAV_1_1_1.txt         → *_SV_1_0_0_to_SV_1_1_1.txt
-  EAV ↔ EAV  : *_EAV_1_1_1_to_EAV_1_1_-1.txt        → *_SV_1_1_1_to_SV_1_1_-1.txt
-                                                       → *_lower_branch_rotates.txt
-
 Key equations (Chen et al. 2025):
   k_ij = (1/τ₀) exp(-ΔE_ij / kT)                   (Eq. 6)  — Néel-Arrhenius rate
   p(t+Δt) = exp(A Δt) · p(t)                        (Eq. 4)  — Markov update
   A_ij = k_{j→i} (i≠j),  A_ii = -Σ_{j≠i} k_{i→j}  (Eq. 5)  — generator matrix
   m_B = Σ_i m_i · p_i                               (Eq. 2)  — net moment
-
-Magnetic moment convention:
-  Each state's moment uses the MERRILL-derived fraction from HYST_FRACS:
-    m_i = HYST_FRACS[size][type] × Ms × V × n̂_i
-  SD states: fraction ≈ 1.0 (fully saturated single domain)
-  HAV states: fraction < 1.0 (hard-axis vortex, reduced net moment)
-  EAV states: fraction < 1.0 (easy-axis vortex, small net moment)
-  crm_moment_projected() returns the raw magnetic moment in Am².
-  Divide by Ms × V to obtain the dimensionless M_CRM/Ms.
 
 Growth model:
   Constant rate from size_min to size_max over total growth time T_total.
@@ -39,8 +22,6 @@ Growth model:
 
 Assemblage average:
   run_assemblage() averages over N_ORIENTATIONS Fibonacci-sphere directions.
-  Alternatively notebooks use a single [111] orientation (exact for isotropic
-  assemblages via the isotropy proof, §2.9 of crm_comprehensive_notebook.ipynb).
 """
 
 import os
@@ -332,13 +313,6 @@ def _parse_hyst_moment(path: str) -> Optional[np.ndarray]:
 def _build_hyst_fracs(hyst_dir: str = None) -> Dict[int, Dict[str, float]]:
     """
     Build per-size moment-fraction table from MERRILL size-loop .hyst files.
-
-    Moment fractions are extracted directly from the size loop:
-      'SD'      : |M|/Ms from upper.hyst  (SD branch, high moment)
-      'HAV/EAV' : |M|/Ms from lower.hyst  (vortex branch, lower moment)
-    The lower-branch value is assigned to whichever vortex state types are
-    active at that size (from _STATE_TYPES), with no heuristic classification.
-    Defaults (1.00 / 0.84 / 0.36) fill sizes without MERRILL hyst data.
     """
     if hyst_dir is None:
         hyst_dir = HYST_DIR
@@ -435,11 +409,6 @@ _OLD_FILENAMES: Dict[str, List[str]] = {
 def load_barriers(size_nm: int, T_celsius: int = 20) -> Dict[str, Tuple[float, float]]:
     """
     Load all available energy barriers for a given grain size and temperature.
-
-    Tries new-convention filenames first, then falls back to old naming.
-    For lower_branch_rotates.txt disambiguation:
-      - Treated as HAV-HAV only when size_hyst_states.txt is also present
-      - Otherwise treated as EAV-EAV
     Returns dict: transition_type -> (dE_forward, dE_backward) in Joules.
     """
     data_dir = os.path.join(_MONO_BASE, "energy_barriers", f"T{T_celsius}")
@@ -507,7 +476,7 @@ def build_generator(
       A[i, i] = -Σ_{j≠i} k_{i→j}     (total outflow from state i)
 
     Barrier with Zeeman field correction (saddle-point approximation):
-      ΔE_{i→j}(B) = ΔE₀ - ½ (m_j - m_i) · B
+      ΔE_{i→j}(B) = ΔE₀ - (m_j - m_i) · B
 
     Moments m_i use HYST_FRACS so that vortex states (HAV, EAV) contribute
     their correct reduced Zeeman energy, not the full Ms × V value.
@@ -531,8 +500,9 @@ def build_generator(
             dE_fwd, dE_bwd = barriers[ttype]
             dE0 = dE_fwd if is_fwd else dE_bwd
 
-            # Zeeman correction: ΔE(B) = ΔE₀ - ½(m_j - m_i)·B
+            # Zeeman correction: ΔE(B) = ΔE₀ - (m_j - m_i)·B
             dE = dE0 - 0.5 * float(np.dot(ms[j] - ms[i], B_vec))
+            # dE = dE0 - float(np.dot(ms[j] - ms[i], B_vec))
             dE = max(dE, 0.0)
 
             k_ij = _rate(dE)
@@ -553,13 +523,6 @@ def redistribute(
 ) -> np.ndarray:
     """
     Map probability vector when the state space changes between size regimes.
-
-    Same-type mapping (SD→SD, HAV→HAV, EAV→EAV) preserves direction index.
-    Cross-type mapping uses adjacency rules:
-      SD ↔ EAV : same ⟨111⟩ direction index
-      SD ↔ HAV : _sd_hav_adj (each SD has 3 adjacent HAV)
-      HAV ↔ EAV: _hav_eav_adj (each HAV shares axis sign with 4 EAV)
-    Priority: same type > EAV/SD (same index) > HAV (adjacent, split).
     """
     new_types = {s[0] for s in new_states}
     p_new     = np.zeros(len(new_states))
@@ -676,37 +639,6 @@ def markov_step(p: np.ndarray, A: np.ndarray, dt: float) -> np.ndarray:
     """
     Evolve probability by one time step: p(t+Δt) = exp(A Δt) · p(t)  (Eq. 4).
 
-    Uses scipy.linalg.expm directly whenever that is numerically safe
-    (max_rate * dt <= _EXPM_SAFE_ARG). Above that, expm(A*dt) itself can
-    become unreliable (e.g. an unblocked/SP-like max_rate ~1e9/s evolved
-    over a geological dt ~years gives an exponent ~1e16, far past where
-    scipy's own internal scaling-and-squaring stays accurate) -- handled by
-    doing the scaling-and-squaring manually: evolve a short, safe
-    sub-interval directly via expm, then repeatedly square that transition
-    matrix (M @ M, doubling the elapsed time each round) to reach the full
-    duration.
-
-    Two earlier fallback designs were tried and rejected during testing:
-    - A single generator-wide steady-state snap whenever max_rate*dt > 50
-      (max_rate is only the *fastest* relaxation rate in A; for generators
-      with a wide spread of timescales -- confirmed for exchange-coupled
-      multi-phase generators with sparse per-edge barrier coverage, where
-      eigenvalues can span >10 orders of magnitude -- the fastest mode can
-      satisfy that threshold while much slower modes are still far from
-      equilibrium, making the whole-system steady state wrong by orders of
-      magnitude).
-    - Per-eigenmode evaluation via eigendecomposition (mathematically exact,
-      and immune to the above issue, but numerically unreliable for
-      near-defective matrices -- confirmed for a highly symmetric mono-phase
-      generator with 8 numerically-degenerate eigenvalues and an
-      eigenvector-matrix condition number ~1e31, which corrupted the result
-      even though the eigenvalues themselves were fine).
-
-    Manual scaling-and-squaring avoids both failure modes: it never
-    diagonalizes anything (robust for defective/degenerate spectra), and
-    every individual expm call stays within the same safe argument range
-    used by the direct path (robust for wide timescale spreads, since nothing
-    is assumed to have converged early).
     """
     max_rate = -np.min(np.diag(A))
     if max_rate == 0.0:
@@ -929,8 +861,6 @@ def run_assemblage(
     Barriers are loaded once and reused across all n_orientations directions.
     Returns the mean M_CRM/Ms as a function of grain size (shape: len(sizes),).
 
-    Note: for SD-only assemblages the single-orientation [111] shortcut
-    (isotropy proof) is exact and much faster than this function.
     """
     all_barriers = {s: load_barriers(s) for s in sizes}
     directions   = _fibonacci_sphere(n_orientations)
@@ -1287,8 +1217,8 @@ def sample_assemblage_moments(
     rng:         np.random.Generator,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Direct Monte Carlo assemblage moment components — no CLT/Gaussian
-    shortcut. For every N in N_values (however large), draws K_trials
+    Direct Monte Carlo assemblage moment components. 
+    For every N in N_values (however large), draws K_trials
     N-grain assemblages **with replacement** from the pool, assigns each
     grain's perpendicular component a random azimuth, and sums.
 
@@ -1306,15 +1236,6 @@ def sample_assemblage_moments(
     M_par_sum, M_perp_x, M_perp_y : (len(N_values), K_trials) summed
         parallel and transverse (lab-frame x/y) moment components (Am²)
 
-    Notes
-    -----
-    Internally batches over K_trials when N is large enough that a single
-    (K_trials, N) index array would be too big to hold in memory (e.g.
-    N=1e7 at K_trials=600 would need ~48 GB for `idx` alone) — this is a
-    memory-layout optimization only, not a statistical shortcut: the
-    result is identical to the unbatched computation, still literal
-    per-grain Monte Carlo sampling with replacement, no CLT/Gaussian
-    approximation at any N.
     """
     n_pool    = M_par_pool.shape[0]
     n_N       = len(N_values)
@@ -1810,314 +1731,3 @@ def build_fine_grid(
     }
 
 
-# =============================================================================
-# Multi-phase (exchange-coupled) barriers: remagnetization by spin-polarised
-# molecules. Covers the full 20-200 nm range (SD, HAV, and EAV), unlike the
-# SD-only multi-phase dataset used in 1_crm_SD_final.ipynb's Sec. 7-9.
-#
-# Symmetry is broken by exchange coupling (it favours [1,1,1]), so unlike the
-# mono-phase data -- which shares one representative barrier per transition
-# TYPE across all symmetry-equivalent edges -- every individual adjacency
-# edge generally needs its own file. New-style files are per-edge
-# (explicit direction pair); old-style (lower_branch_rotates/
-# size_hyst_states, no per-pair direction) are a single shared fallback
-# value per transition type, same convention as load_barriers().
-# =============================================================================
-
-_MULTI_BASE = r"d:\prebiotic_crm\octahedron\multi_phase\energy_barriers"
-
-_MULTI_OLD_NAMES: Dict[str, str] = {
-    'SD-HAV':  'size_hyst_states',
-    'HAV-HAV': 'lower_branch_rotates',
-    'EAV-EAV': 'lower_branch_rotates',
-}
-
-
-def _multi_state_label(s: State) -> str:
-    """Integer direction label matching multi-phase filenames, e.g. 'SD_-1_-1_1'."""
-    stype, _ = s
-    d = _direction(s)
-    scale = 1.0 if stype == 'HAV' else np.sqrt(3.0)
-    ints = np.round(d * scale).astype(int)
-    return f"{stype}_{ints[0]}_{ints[1]}_{ints[2]}"
-
-
-def _parse_mep_neb_multi(path: str) -> Tuple[float, float]:
-    """
-    Domain-restricted NEB barrier parser for multi-phase (exchange-coupled)
-    MEP files (50-point profiles): saddle = max(E[15:35]), local minima =
-    min(E[0:15]) / min(E[35:50]) -- avoids picking up spurious endpoint
-    wiggles the way a plain max(E)-E[0] parse (_parse_mep) would. Returns
-    (dE_forward, dE_backward) in Joules.
-    """
-    energies = []
-    with open(path) as fh:
-        for line in fh:
-            parts = line.split()
-            if len(parts) >= 2:
-                try:
-                    energies.append(float(parts[1]))
-                except ValueError:
-                    pass
-    E = np.asarray(energies)
-    saddle = E[15:35].max()
-    return float(saddle - E[0:15].min()), float(saddle - E[35:50].min())
-
-
-_MULTI_FNAME_RE = re.compile(
-    r'^x\d+_y\d+_z\d+_(?P<t1>[A-Z]+)_(?P<d1>[\-\d_]+?)_to_(?P<t2>[A-Z]+)_(?P<d2>[\-\d_]+?)_'
-    r'(?P<ev>[\d.eE+-]+)eV\.txt$')
-_MULTI_OLD_RE = re.compile(
-    r'^x\d+_y\d+_z\d+_(?P<name>lower_branch_rotates|size_hyst_states)_'
-    r'(?P<ev>[\d.eE+-]+)eV\.txt$')
-
-
-def _scan_multi_dir(size_nm: int) -> Tuple[Dict[Tuple[str, str, str, str], List[Tuple[float, str]]],
-                                            Dict[str, List[Tuple[float, str]]]]:
-    """
-    One directory listing + regex pass, cached per size: returns
-    (new_style, old_style) where new_style maps
-    (type1, dir1, type2, dir2) -> sorted [(ev, filepath), ...] and old_style
-    maps name -> sorted [(ev, filepath), ...]. Used to snap to the nearest
-    *available* exchange energy per file group, since different edges/sizes
-    have different (and not always overlapping) exchange-energy grids --
-    confirmed by direct inspection (e.g. a 10-point grid at old-style-only
-    sizes vs. a 15-point grid where per-edge new-style files exist).
-    """
-    folder = os.path.join(_MULTI_BASE, f"x{size_nm}_y{size_nm}_z{size_nm}")
-    new_style: Dict[Tuple[str, str, str, str], List[Tuple[float, str]]] = {}
-    old_style: Dict[str, List[Tuple[float, str]]] = {}
-    if not os.path.isdir(folder):
-        return new_style, old_style
-    for fname in os.listdir(folder):
-        if not fname.endswith('.txt') or '_finalPath' in fname or '_initialPath' in fname:
-            continue
-        m = _MULTI_FNAME_RE.match(fname)
-        if m:
-            key = (m.group('t1'), m.group('d1'), m.group('t2'), m.group('d2'))
-            new_style.setdefault(key, []).append((float(m.group('ev')), os.path.join(folder, fname)))
-            continue
-        m2 = _MULTI_OLD_RE.match(fname)
-        if m2:
-            old_style.setdefault(m2.group('name'), []).append(
-                (float(m2.group('ev')), os.path.join(folder, fname)))
-    for d in (new_style, old_style):
-        for k in d:
-            d[k].sort(key=lambda t: t[0])
-    return new_style, old_style
-
-
-_multi_dir_cache: Dict[int, Tuple[dict, dict]] = {}
-
-
-def _nearest_ev_path(entries: List[Tuple[float, str]], exchange_ev: float) -> str:
-    return min(entries, key=lambda t: abs(t[0] - exchange_ev))[1]
-
-
-def load_multi_pair_barriers(
-    size_nm:     int,
-    exchange_ev: float,
-    states:      List[State],
-) -> Dict[Tuple[int, int], Tuple[float, float]]:
-    """
-    Per-edge exchange-coupled barriers for every valid adjacency edge among
-    `states`, at `size_nm`, nearest available to `exchange_ev`. New-style
-    (explicit direction pair) files take priority; old-style (a single
-    shared value per transition type) is used only for edges with no
-    new-style file for either direction. Edges with neither are simply
-    omitted (that specific transition doesn't happen for this grain -- same
-    "if ttype not in barriers: skip" behaviour as build_generator's
-    mono-phase case).
-
-    Different edges (and old-style-only sizes) can have different, non-
-    overlapping exchange-energy grids -- confirmed by direct inspection --
-    so this snaps to the nearest available point *per file group* rather
-    than requiring an exact `exchange_ev` match, which would silently drop
-    coverage at sizes/edges whose grid doesn't include that exact value.
-
-    Returns {(i, j): (dE_fwd, dE_bwd)} keyed by index into `states`, i < j,
-    values in Joules. dE_fwd is i->j, dE_bwd is j->i.
-    """
-    if size_nm not in _multi_dir_cache:
-        _multi_dir_cache[size_nm] = _scan_multi_dir(size_nm)
-    new_style, old_style = _multi_dir_cache[size_nm]
-
-    out: Dict[Tuple[int, int], Tuple[float, float]] = {}
-    old_barrier_cache: Dict[str, Tuple[float, float]] = {}
-
-    for i in range(len(states)):
-        for j in range(i + 1, len(states)):
-            si, sj = states[i], states[j]
-            tr = get_transition(si, sj)
-            if tr is None:
-                continue
-            ttype, _ = tr
-
-            lbl_i, lbl_j = _multi_state_label(si), _multi_state_label(sj)
-            key_ij = tuple(lbl_i.split('_', 1) + lbl_j.split('_', 1))
-            key_ji = tuple(lbl_j.split('_', 1) + lbl_i.split('_', 1))
-
-            if key_ij in new_style:
-                out[(i, j)] = _parse_mep_neb_multi(_nearest_ev_path(new_style[key_ij], exchange_ev))
-                continue
-            if key_ji in new_style:
-                bwd, fwd = _parse_mep_neb_multi(_nearest_ev_path(new_style[key_ji], exchange_ev))
-                out[(i, j)] = (fwd, bwd)
-                continue
-
-            old_name = _MULTI_OLD_NAMES.get(ttype)
-            if old_name is None or old_name not in old_style:
-                continue
-            if old_name not in old_barrier_cache:
-                old_barrier_cache[old_name] = _parse_mep_neb_multi(
-                    _nearest_ev_path(old_style[old_name], exchange_ev))
-            out[(i, j)] = old_barrier_cache[old_name]
-
-    return out
-
-
-def build_generator_multi(
-    states:    List[State],
-    pair_bars: Dict[Tuple[int, int], Tuple[float, float]],
-    B_vec:     np.ndarray,
-    size_nm:   int,
-) -> np.ndarray:
-    """
-    Generator matrix A = Q^T from per-EDGE exchange-coupled barriers, as
-    returned by load_multi_pair_barriers -- generalizes build_generator
-    (which looks up one shared barrier per transition TYPE) to barriers that
-    can differ edge-by-edge, since exchange coupling breaks the symmetry
-    that lets mono-phase data share one representative value. Same Zeeman
-    correction convention: dE(B) = dE0 - 0.5*(m_j-m_i).B.
-    """
-    n  = len(states)
-    V  = grain_volume(size_nm)
-    ms = [_moment(s, V, size_nm) for s in states]
-    A  = np.zeros((n, n))
-    for (i, j), (dE_fwd, dE_bwd) in pair_bars.items():
-        for src, dst, dE0 in [(i, j, dE_fwd), (j, i, dE_bwd)]:
-            dE = dE0 - 0.5 * float(np.dot(ms[dst] - ms[src], B_vec))
-            dE = max(dE, 0.0)
-            k  = _rate(dE)
-            A[dst, src] += k
-            A[src, src] -= k
-    return A
-
-
-# =============================================================================
-# CRM remagnetization: stage-sequence engine
-# =============================================================================
-#
-# Generalizes the isolated -> exchange-coupled -> isolated post-growth
-# pipeline (originally hand-written per stage in 4_CRM_remag.ipynb) into an
-# arbitrary sequence of stages, each independently isolated or exchange-
-# coupled, with its own duration, field, and (for exchange stages) exchange
-# energy. This is what makes repeated exposure cycles and per-stage field/
-# energy control a matter of building a longer `stage_specs` list rather than
-# writing a new loop per scenario. See 5_CRM_remag_paramspace.ipynb.
-
-def _log_time_points(t_total: float, n: int) -> np.ndarray:
-    """n log-spaced points from t_total/1e4 to t_total (avoids t=0 in logspace)."""
-    return np.logspace(np.log10(t_total / 1e4), np.log10(t_total), n)
-
-
-def moment_vector(states: List[State], p: np.ndarray, size_nm: int) -> np.ndarray:
-    """Full 3-vector net moment (Am2) for probability vector p over states."""
-    V  = grain_volume(size_nm)
-    ms = np.array([_moment(s, V, size_nm) for s in states])
-    return (p[:, None] * ms).sum(axis=0)
-
-
-def run_stage(
-    p:        np.ndarray,
-    states:   List[State],
-    size_nm:  int,
-    A:        np.ndarray,
-    duration: float,
-    B_hat:    np.ndarray,
-    n_t:      int = 25,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Evolve p through fixed generator A for `duration` seconds, recording the
-    B_hat-projected moment at n_t log-spaced checkpoints within the stage.
-
-    Returns (p_final, t_local, m_traj) where t_local is seconds elapsed
-    since the start of this stage (shape (n_t,)) and m_traj is the
-    corresponding projected moment (Am2, shape (n_t,)).
-
-    n_t=1 is a special case: a single step spanning the *entire* duration
-    (not `_log_time_points`' t_total/1e4 first point) -- since A is constant
-    within a stage, this gives the exact same final p as any finer
-    subdivision (expm(A*dt1) @ expm(A*dt2) == expm(A*(dt1+dt2))), just
-    without an intermediate trajectory. Endpoint-only sweeps should use
-    n_t=1 for a large speedup with zero accuracy loss on the final state.
-    """
-    if n_t == 1:
-        t_local = np.array([duration])
-    else:
-        t_local = _log_time_points(duration, n_t)
-    dt = np.diff(np.concatenate([[0.0], t_local]))
-    m_traj  = np.zeros(n_t)
-    for ti in range(n_t):
-        p = markov_step(p, A, dt[ti])
-        m_traj[ti] = crm_moment_projected(states, p, B_hat, size_nm)
-    return p, t_local, m_traj
-
-
-def run_stage_sequence(
-    p0:           np.ndarray,
-    states:       List[State],
-    size_nm:      int,
-    stage_specs:  List[Dict],
-    B_hat:        np.ndarray,
-    all_barriers: Dict[int, Dict[str, Tuple[float, float]]],
-    n_t:          int = 25,
-) -> List[Dict]:
-    """
-    Chain `run_stage` calls over an arbitrary sequence of stages.
-
-    Each entry of `stage_specs` is a dict:
-      {'kind': 'isolated', 'duration': seconds, 'B_vec': array(3,)}
-      {'kind': 'exchange', 'duration': seconds, 'B_vec': array(3,),
-       'exchange_ev': float}
-
-    The generator is rebuilt once per stage (barriers are constant within a
-    stage, only the sequence of stages changes them) -- 'isolated' uses
-    `build_generator` with `all_barriers[size_nm]`; 'exchange' uses
-    `load_multi_pair_barriers`/`build_generator_multi` at that stage's
-    `exchange_ev`.
-
-    Returns a list (one entry per stage) of
-      {'p': p_end, 'vec': moment_vector(...), 't_local':..., 'm_traj':...}
-    """
-    p = p0.copy()
-    out = []
-    for spec in stage_specs:
-        B_vec = spec['B_vec']
-        if spec['kind'] == 'isolated':
-            A = build_generator(states, all_barriers[size_nm], B_vec, size_nm)
-        elif spec['kind'] == 'exchange':
-            pair_bars = load_multi_pair_barriers(size_nm, spec['exchange_ev'], states)
-            A = build_generator_multi(states, pair_bars, B_vec, size_nm)
-        else:
-            raise ValueError(f"unknown stage kind: {spec['kind']!r}")
-
-        p, t_local, m_traj = run_stage(p, states, size_nm, A, spec['duration'], B_hat, n_t)
-        out.append({'p': p, 'vec': moment_vector(states, p, size_nm),
-                     't_local': t_local, 'm_traj': m_traj})
-    return out
-
-
-def flip_angle_deg(v0: np.ndarray, v1: np.ndarray) -> float:
-    """Angle (degrees) between two moment vectors. NaN if either is ~zero."""
-    n0, n1 = np.linalg.norm(v0), np.linalg.norm(v1)
-    if n0 < 1e-30 or n1 < 1e-30:
-        return float('nan')
-    c = np.dot(v0, v1) / (n0 * n1)
-    return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
-
-
-def intensity_ratio(v0: np.ndarray, v1: np.ndarray) -> float:
-    """|v1| / |v0| -- final-over-initial moment magnitude. NaN if v0 ~ zero."""
-    n0 = np.linalg.norm(v0)
-    return float(np.linalg.norm(v1) / n0) if n0 > 1e-30 else float('nan')
