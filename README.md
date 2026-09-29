@@ -6,4 +6,4 @@ This repository contains the scripts that were used to create the data.
 
 When using any of the code, figures or data, please cite the corresponding paper:
 
-Devienne, J. A. P. M., Harrison, R. J., Mansbach, E. N., & Williams, W. (2026). Efficient Palaeofield Recording During Magnetite Growth Through the Vortex Transition. 
+Devienne, J. A. P. M., Harrison, R. J., Mansbach, E. N., & Williams, W. (2026). Efficient Remanence Recording During Magnetite Growth Through the Vortex Transition. 
